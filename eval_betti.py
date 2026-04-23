@@ -98,7 +98,7 @@ def main():
 
     layouts = {}
     for method in args.methods:
-        p = args.data / f"{method}_layout_n{args.n_neighbors}.npy"
+        p = args.data / f"{method}_layout_n{args.n_neighbors}_d2.npy"
         if not p.exists():
             print(f"missing {p} — skipping {method}", file=sys.stderr)
             continue

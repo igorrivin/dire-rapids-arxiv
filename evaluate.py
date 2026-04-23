@@ -125,7 +125,7 @@ def main():
 
     rows = []
     for method in args.methods:
-        tag = f"{method}_layout_n{args.n_neighbors}"
+        tag = f"{method}_layout_n{args.n_neighbors}_d2"
         Y_path = args.data / f"{tag}.npy"
         if not Y_path.exists():
             print(f"missing {Y_path} — skipping {method}", file=sys.stderr)

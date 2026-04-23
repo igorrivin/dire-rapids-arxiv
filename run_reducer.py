@@ -108,7 +108,7 @@ def main():
         Y, elapsed = run_umap(X, args.n_neighbors, args.n_components, args.seed)
     print(f"{args.method} fit_transform: {elapsed:.1f}s for {len(X):,} points")
 
-    tag = f"{args.method}_layout_n{args.n_neighbors}"
+    tag = f"{args.method}_layout_n{args.n_neighbors}_d{args.n_components}"
     out_layout = args.data / f"{tag}.npy"
     np.save(out_layout, Y.astype(np.float32))
     print(f"Saved layout → {out_layout}")

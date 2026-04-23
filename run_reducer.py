@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Run DiRe-Rapids on mean-pooled arXiv doc embeddings.
+"""Run DiRe-Rapids or cuML UMAP on mean-pooled arXiv doc embeddings.
 
 Loads artifacts produced by `build_doc_embeddings.py`:
     data/embeddings.npy   (N, 384) float32
     data/meta.parquet     has columns primary_category, arxiv_id, title, ...
 
-Saves:
-    data/dire_layout.npy           (N, n_components) float32
-    data/dire_layout.png           scatter colored by top-K primary categories
-    data/dire_layout.html          interactive plotly scatter (if --interactive)
+Saves (with method tag in the filename):
+    data/<method>_layout_nN.npy   (N, n_components) float32
+    data/<method>_layout_nN.png   scatter colored by top-K primary categories
+    data/<method>_layout_nN.html  interactive plotly scatter (if --interactive)
+
+Both methods share identical preprocessing (optional subsample, L2-normalize)
+and identical plotting code, so the two PNGs are directly comparable.
 """
 
 import argparse
@@ -26,13 +29,44 @@ def normalize_rows(x: np.ndarray) -> np.ndarray:
     return (x / n).astype(np.float32)
 
 
+def run_dire(X: np.ndarray, n_neighbors: int, n_components: int):
+    from dire_rapids import create_dire
+    reducer = create_dire(
+        n_components=n_components,
+        n_neighbors=n_neighbors,
+        verbose=True,
+    )
+    print(f"Reducer: {type(reducer).__name__}")
+    t0 = time.time()
+    Y = reducer.fit_transform(X)
+    return Y, time.time() - t0
+
+
+def run_umap(X: np.ndarray, n_neighbors: int, n_components: int, random_state: int):
+    from cuml import UMAP
+    reducer = UMAP(
+        n_components=n_components,
+        n_neighbors=n_neighbors,
+        init="spectral",       # cuML default
+        metric="euclidean",    # we pre-normalize, so euclidean ≈ cosine
+        random_state=random_state,
+        verbose=True,
+    )
+    print(f"Reducer: cuML UMAP")
+    t0 = time.time()
+    Y = reducer.fit_transform(X)
+    return np.asarray(Y), time.time() - t0
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--method", choices=["dire", "umap"], default="dire")
     ap.add_argument("--data", default=Path(__file__).parent / "data", type=Path)
-    ap.add_argument("--n-neighbors", type=int, default=32)
+    ap.add_argument("--n-neighbors", type=int, default=16,
+                    help="common default for both DiRe and cuML UMAP")
     ap.add_argument("--n-components", type=int, default=2)
     ap.add_argument("--no-normalize", action="store_true",
-                    help="skip L2-normalization before running DiRe")
+                    help="skip L2-normalization before running")
     ap.add_argument("--sample", type=int, default=0,
                     help="random subsample to N points (0 = all)")
     ap.add_argument("--top-k-cats", type=int, default=15,
@@ -64,44 +98,35 @@ def main():
         meta = meta.iloc[idx].reset_index(drop=True)
         print(f"Subsampled to {len(X):,} papers")
 
-    # Normalize (mean-pooled BGE unit vectors are ~0.85-1.0 norm; cosine = euclidean on unit sphere)
     if not args.no_normalize:
         X = normalize_rows(X)
         print("L2-normalized embeddings")
 
-    # Run DiRe-Rapids
-    from dire_rapids import create_dire
-    reducer = create_dire(
-        n_components=args.n_components,
-        n_neighbors=args.n_neighbors,
-        verbose=True,
-    )
-    print(f"Reducer: {type(reducer).__name__}")
-    t0 = time.time()
-    Y = reducer.fit_transform(X)
-    elapsed = time.time() - t0
-    print(f"DiRe fit_transform: {elapsed:.1f}s for {len(X):,} points")
+    if args.method == "dire":
+        Y, elapsed = run_dire(X, args.n_neighbors, args.n_components)
+    else:
+        Y, elapsed = run_umap(X, args.n_neighbors, args.n_components, args.seed)
+    print(f"{args.method} fit_transform: {elapsed:.1f}s for {len(X):,} points")
 
-    out_layout = args.data / "dire_layout.npy"
+    tag = f"{args.method}_layout_n{args.n_neighbors}"
+    out_layout = args.data / f"{tag}.npy"
     np.save(out_layout, Y.astype(np.float32))
     print(f"Saved layout → {out_layout}")
 
-    # Plot
+    # ─── Plot ───────────────────────────────────────────────────────────────
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     cats = meta["primary_category"].fillna("").values
     counts = pd.Series(cats).value_counts()
-    # Drop empty-string from top-K
     top_cats = [c for c in counts.index if c][:args.top_k_cats]
     color_map = {c: i for i, c in enumerate(top_cats)}
-    color_idx = np.array([color_map.get(c, -1) for c in cats])  # -1 = "other"
+    color_idx = np.array([color_map.get(c, -1) for c in cats])
 
     fig, ax = plt.subplots(figsize=(14, 12), dpi=120)
     cmap = plt.get_cmap("tab20", len(top_cats))
 
-    # "Other" (gray) first, so top categories draw on top
     other_mask = color_idx == -1
     if other_mask.any():
         ax.scatter(Y[other_mask, 0], Y[other_mask, 1], s=1.5, c="lightgray",
@@ -114,17 +139,16 @@ def main():
         ax.scatter(Y[m, 0], Y[m, 1], s=2.5, color=cmap(i), alpha=0.7, linewidths=0,
                    label=f"{cat} ({m.sum():,})")
 
-    ax.set_title(f"DiRe-Rapids layout: {len(X):,} arXiv papers, "
-                 f"mean-pooled BGE-small-384\n"
+    method_label = {"dire": "DiRe-Rapids (DiReCuVS)", "umap": "cuML UMAP"}[args.method]
+    ax.set_title(f"{method_label} · {len(X):,} arXiv papers, mean-pooled BGE-small-384\n"
                  f"n_neighbors={args.n_neighbors}, n_components={args.n_components}, "
                  f"time={elapsed:.1f}s")
     ax.set_xticks([]); ax.set_yticks([])
     ax.legend(loc="upper right", fontsize=8, markerscale=3, framealpha=0.9)
-    out_png = args.data / "dire_layout.png"
+    out_png = args.data / f"{tag}.png"
     fig.savefig(out_png, bbox_inches="tight", dpi=150)
     print(f"Saved plot → {out_png}")
 
-    # Optional interactive Plotly
     if args.interactive:
         try:
             import plotly.express as px
@@ -135,12 +159,12 @@ def main():
             fig = px.scatter(
                 plot_df, x="x", y="y", color="color_cat",
                 hover_data=["arxiv_id", "title", "primary_category", "n_chunks"],
-                title=f"DiRe-Rapids · {len(X):,} arXiv papers",
+                title=f"{method_label} · {len(X):,} arXiv papers",
                 render_mode="webgl",
             )
             fig.update_traces(marker=dict(size=3, opacity=0.7))
             fig.update_layout(height=900)
-            out_html = args.data / "dire_layout.html"
+            out_html = args.data / f"{tag}.html"
             fig.write_html(str(out_html))
             print(f"Saved interactive HTML → {out_html}")
         except ImportError as e:

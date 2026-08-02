@@ -184,11 +184,94 @@ high-D data.
 
 ---
 
+## Intrinsic dimension of the 384-d embeddings
+
+What is the "true" dimension of the BGE-small embeddings? Estimated with a
+battery of intrinsic-dimension (ID) estimators (`scikit-dimension`) plus a
+linear PCA baseline, on deduplicated subsamples (exact-duplicate embeddings —
+identical abstracts / cross-listings — give zero NN-distances that break MLE
+and bias the kNN estimators; they are removed). Stable across n = 10k/20k/50k.
+
+| estimator | scale probed | value |
+|---|---|---:|
+| PCA components for 90% / 95% / 99% variance | linear | 162 / 232 / 331 |
+| PCA participation ratio `(Σλ)²/Σλ²` | linear, soft | **22.2** |
+| TwoNN (Facco et al. 2017) | local global-ID | **20–24** |
+| MLE / Levina–Bickel (2004) | local global-ID | **22.0–22.4** |
+| CorrInt (correlation dimension) | fine scale | ~11 |
+| lPCA (100-NN neighborhoods) | coarse local | ~45 |
+
+**Headline: the embedding manifold is ~22-dimensional** sitting in the 384-d
+ambient space (really S³⁸³ — the embeddings are L2-normalized). TwoNN, MLE,
+and the linear participation ratio agree at ~22; CorrInt reads lower (~11) at
+finer scales and lPCA higher (~45) at coarser ones, the usual scale-dependent
+spread. TwoNN/MLE are known to *under*-read under positive curvature, so true
+local d is plausibly a touch above 22. This ~20× compression from 384→22 is the
+structural reason 2-d/3-d layouts cannot preserve topology (cf. the β₁ DTW
+costs above): they crush a ~22-d object into the plane.
+
+ID is a **constraint and diagnostic, not a target.** A useful by-product is the
+*fluffiness ratio* PCA95 / d ≈ 232 / 22 ≈ **10**: variance lives in ~22 effective
+directions but bleeds across ~230 linear ones, a coiling/curvature proxy.
+
+### Per-category: is the manifold stratified?
+
+Restricting to each large `primary_category` (top-18, all math / math-ph /
+hep-th / cs.IT — the corpus is math-dominated by the LaTeX-source filter):
+
+- **Local ID is roughly uniform across subfields**: TwoNN 10–15 (std 1.5),
+  MLE 16–20 (std 1.6). No strong stratification — the manifold is *not* a
+  patchwork of wildly different-dimensional sheets.
+- **Within-field d (~12–18) < whole-corpus d (~22).** Suggests a decomposition
+  *within-field topical variation (~12–18) + between-field arrangement (~4–10)
+  ≈ 22* — a chunk of the "true dimension" is the directions separating subfields,
+  not variation inside one. **Caveat:** per-category samples are near-complete
+  while the full-corpus sample is ~7% — the gap is partly a sampling-density/scale
+  artifact, so treat the between-field component as suggestive, not pinned.
+- Faint edge signal: analytic/physical fields (math.FA, hep-th, math-ph) read
+  lowest-d but most coiled (fluff ≈ 22); combinatorial/probabilistic fields
+  (math.CO, math.PR, math.NT) highest-d, least coiled (fluff ≈ 15–16).
+
+### Density-matched: is the within<between gap real? (mostly scale)
+
+The within/between gap above was confounded by sampling density. Resolving it
+by estimating ID *vs neighborhood radius* (Levina-Bickel MLE swept over k, with
+the MacKay-Ghahramani reciprocal-average correction) and comparing curves AT
+EQUAL RADIUS (`intrinsic_dimension_scale.py`, see `data/intrinsic_dim_scale.png`):
+
+- **ID is strongly scale-dependent** — every curve rises with radius. The local
+  tangent dimension at the finest resolvable scale is only **~11–15**; it inflates
+  to **~22 at coarse scale** through curvature/coiling (matches fluffiness ~10).
+- **The full corpus only ever measures coarse scale.** Even its tightest
+  neighborhoods sit at radius ~0.235 (d~20) — sparsity prevents finer probing —
+  so its flat ~22 is a *coarse-scale* reading, not the tangent dimension.
+- **Most of the raw 12-vs-22 gap was the scale artifact**: dense categories reach
+  fine scales (d~11–15) the sparse full corpus cannot.
+- **At matched radius a ~2–3 dim residual remains** (math.CO gap −2.3, math.FA
+  −3.5), shrinking to ~0 at coarse scale: a *genuine but modest* between-category
+  contribution. It is conservative — at fixed absolute radius a category's
+  neighborhood covers a larger fraction of its (smaller) manifold, which biases
+  it upward, yet it still reads lower. (math.AP is too dense to matched-compare:
+  radii 0.18–0.22 lie entirely below the corpus range; reported, not extrapolated.)
+
+Refined picture: **fine-scale tangent dim ~11–15**, curvature-inflated to **~22
+at coarse scale**, plus **~2–3 dim genuine between-category** spread. The ~22
+headline is a coarse-scale figure; the local tangent dimension is ~12–15.
+
+**Why an autoencoder was *not* used:** a bottleneck-AE's "elbow" entangles
+intrinsic dimension with architecture, width, and training budget. Dedicated ID
+estimators answer the actual question in ~30 lines with no such confound.
+
+---
+
 ## Files
 
 | Script | Produces |
 |---|---|
 | `build_doc_embeddings.py` | `data/embeddings.npy`, `data/meta.parquet` |
+| `intrinsic_dimension.py` | `data/intrinsic_dim.log` (ID battery, full corpus) |
+| `intrinsic_dimension_by_category.py` | per-category ID table (stdout) |
+| `intrinsic_dimension_scale.py` | `data/intrinsic_dim_scale.png` (ID vs scale) |
 | `run_reducer.py` | `data/{dire,umap}_layout_n{n}_d{d}.{npy,png}` |
 | `evaluate.py` | `data/eval_n{n}.csv` |
 | `eval_betti.py` | `data/eval_betti_n{N}.{csv,npz,png}` |

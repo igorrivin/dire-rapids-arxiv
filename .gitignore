@@ -5,3 +5,8 @@ __pycache__/
 *.png
 *.html
 .env
+# Local-only Zenodo uploader — reads PAT from env, never written to disk
+release/zenodo_deposit.py
+release/zenodo_response.json
+release/
+*.pyc
